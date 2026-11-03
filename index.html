@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ForkPad</title>
+  <meta name="theme-color" content="#100e0d">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2215%22%20fill%3D%22%23ff8f1f%22%2F%3E%3Cg%20transform%3D%22rotate(-6%2030%2034)%22%3E%3Cpath%20d%3D%22M12%2011h26l11%2011v30a4%204%200%200%201-4%204H12a4%204%200%200%201-4-4V15a4%204%200%200%201%204-4z%22%20fill%3D%22%23fff6ea%22%2F%3E%3Cpath%20d%3D%22M38%2011v8a3%203%200%200%200%203%203h8z%22%20fill%3D%22%23f0d2ad%22%2F%3E%3Cpath%20d%3D%22M15%2027h17M15%2035h22%22%20stroke%3D%22%23c4b3a1%22%20stroke-width%3D%223.4%22%20stroke-linecap%3D%22round%22%2F%3E%3Cpath%20d%3D%22M15%2044c3-4%205%204%208%200s5%204%208%200%22%20fill%3D%22none%22%20stroke%3D%22%23ff8f1f%22%20stroke-width%3D%223.4%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(34%2045)%20rotate(38)%20translate(-6%20-8)%22%3E%3Cpath%20d%3D%22M6-30V8M0%208V2a6%206%200%200%201%2012%200v6%22%20fill%3D%22none%22%20stroke%3D%22%231d1206%22%20stroke-width%3D%224.4%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="15" fill="#ff8f1f"/><g transform="rotate(-6 30 34)"><path d="M12 11h26l11 11v30a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4V15a4 4 0 0 1 4-4z" fill="#fff6ea"/><path d="M38 11v8a3 3 0 0 0 3 3h8z" fill="#f0d2ad"/><path d="M15 27h17M15 35h22" stroke="#c4b3a1" stroke-width="3.4" stroke-linecap="round"/><path d="M15 44c3-4 5 4 8 0s5 4 8 0" fill="none" stroke="#ff8f1f" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></g><g transform="translate(34 45) rotate(38) translate(-6 -8)"><path d="M6-30V8M0 8V2a6 6 0 0 1 12 0v6" fill="none" stroke="#1d1206" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/></g></svg>
+        <span>Fork<b>Pad</b></span>
+      </div>
+      <button class="quick-btn" data-act="quick" title="Capture a quick thought from anywhere">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        Quick thought <kbd>Alt+Q</kbd>
+      </button>
+      <nav id="nav"></nav>
+      <button id="settingsBtn" class="nav-item" data-act="settings">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span class="lbl">Backup &amp; data</span>
+      </button>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <button class="icon-btn menu-btn" data-act="menu" title="Menu">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <label class="search">
+          <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="search" type="search" placeholder="Search notes, thoughts & tasks…  try #tag" autocomplete="off">
+          <kbd>Ctrl K</kbd>
+        </label>
+        <span class="spacer"></span>
+        <button class="btn primary sm" data-act="new-note" title="New note (Alt+N)">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New note
+        </button>
+      </header>
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toast" role="status"></div>
+  <datalist id="tagList"></datalist>
+  <input type="file" id="fileImg" accept="image/*" multiple hidden>
+  <input type="file" id="fileImport" accept=".json,application/json" hidden>
+
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

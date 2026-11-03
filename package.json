@@ -1,0 +1,13 @@
+{
+  "name": "forkpad",
+  "version": "1.0.0",
+  "description": "Local notes and Kanban board that Claude Code can read and update through an MCP connector.",
+  "license": "MIT",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/start.js",
+    "server": "node server/forkpad-server.js",
+    "mcp": "node mcp/forkpad-mcp.js"
+  }
+}

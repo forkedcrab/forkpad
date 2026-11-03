@@ -1,0 +1,13 @@
+# Your notes, tasks, screenshots and backups stay on your computer
+data/
+
+# Local-only files
+*.log
+*.lnk
+forkpad-icon.ico
+.claude/
+node_modules/
+PLAN.md
+tools/
+.DS_Store
+Thumbs.db
