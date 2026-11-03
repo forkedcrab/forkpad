@@ -4,9 +4,7 @@ A small, local notes app and Kanban board that Claude Code can read and update.
 
 Write down bugs, ideas and tasks while you work (paste screenshots too), then tell Claude Code "fix the open ForkPad bugs". Claude reads the tasks and screenshots, makes the fixes in your code and moves the cards to Done with a note of what changed. You watch the board update live.
 
-<!-- Demo GIF: save it as docs/demo.gif, then remove these comment markers.
-![ForkPad demo](docs/demo.gif)
--->
+![ForkPad demo: Claude Code picks up a card from ForkPad, fixes it in Unity and marks it done](docs/demo.gif)
 
 - Everything stays on your computer as plain JSON files. No account, no cloud, no tracking.
 - No npm install and no build step: just Node.js and a browser.
