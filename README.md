@@ -110,6 +110,44 @@ In ForkPad, edit a project (pencil next to its name) and set **Code folder** to 
 
 Claude only deletes projects, tasks or notes when you ask it to. Deleting a project also deletes its tasks and notes.
 
+## Use it with other AI tools
+
+The connector is a standard local MCP server with nothing Claude-specific in it, so any app that supports local (stdio) MCP servers can use it. The command is always the same: `node /path/to/forkpad/mcp/forkpad-mcp.js`.
+
+**Codex** (OpenAI's coding agent: CLI, IDE extension, desktop)
+
+```bash
+codex mcp add forkpad -- node /path/to/forkpad/mcp/forkpad-mcp.js
+```
+
+Or add it to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.forkpad]
+command = "node"
+args = ["/path/to/forkpad/mcp/forkpad-mcp.js"]
+```
+
+**Claude Desktop, Cursor, Windsurf**: add this to the app's MCP settings (`claude_desktop_config.json`, `~/.cursor/mcp.json` or `~/.codeium/windsurf/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "forkpad": { "command": "node", "args": ["/path/to/forkpad/mcp/forkpad-mcp.js"] }
+  }
+}
+```
+
+**VS Code** (Copilot agent mode): the same entry goes in `.vscode/mcp.json`, under `"servers"` instead of `"mcpServers"`.
+
+On Windows, write the path with forward slashes or doubled backslashes inside JSON and TOML, for example `"C:/path/to/forkpad/mcp/forkpad-mcp.js"`.
+
+Apps that don't run inside your code folder (such as Claude Desktop) can't pick the project from the folder, so name the project when you ask, for example "list the open bugs in the My Game project in ForkPad".
+
+**ChatGPT** (website or chat app) doesn't work directly: it only connects to connectors hosted online over HTTPS, and putting your notes on the internet goes against ForkPad's local-only design. Use Codex instead.
+
+Only Claude Code has been tested so far. Reports from other apps are welcome.
+
 ## Your data
 
 Everything lives in the `data` folder inside ForkPad:
