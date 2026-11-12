@@ -49,6 +49,7 @@ const ICONS = {
   pin: '<path d="M12 17v5M9 3h6l-1 6 4 4v2H6v-2l4-4z"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
   board: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
@@ -149,7 +150,8 @@ async function downscale(file, max = 1800) {
 async function gcImages() {
   const imgs = await DB.all('images');
   const used = S.notes.map(n => n.html || '').join(' ');
-  for (const i of imgs) if (!used.includes(`data-fp="${i.id}"`) && Date.now() - (i.created || 0) > 864e5) DB.del('images', i.id);
+  const taskImgs = new Set(S.tasks.flatMap(t => t.images || []));
+  for (const i of imgs) if (!used.includes(`data-fp="${i.id}"`) && !taskImgs.has(i.id) && Date.now() - (i.created || 0) > 864e5) DB.del('images', i.id);
 }
 
 /* ---------- rich text ---------- */
@@ -816,7 +818,8 @@ function openTask(t) {
       <label class="field"><span>Project</span><select id="tmProj">${projectOptions(t.projectId, false)}</select></label>
     </div>
     <div class="field"><span>Tags / sections</span><div class="ed-tags boxed" id="tmTags"></div></div>
-    <label class="field"><span>Details</span><textarea id="tmDesc" rows="6" placeholder="Steps, links, repro notes…">${esc(t.desc || '')}</textarea></label>
+    <label class="field"><span>Details</span><textarea id="tmDesc" rows="6" placeholder="Steps, links, repro notes… paste or drop images">${esc(t.desc || '')}</textarea></label>
+    <div class="tm-imgs" id="tmImgs"></div>
     <footer><button class="btn ghost danger" id="tmDel">${ic('trash')}Delete</button><span class="spacer"></span>
       <span class="muted small">Created ${rel(t.created)}</span><button class="btn primary" data-close>Done</button></footer>`, (m, close) => {
     const ta = $('#tmTitle', m);
@@ -837,11 +840,53 @@ function openTask(t) {
       $('#' + id, m).addEventListener('input', sync); $('#' + id, m).addEventListener('change', sync);
     });
     wireTagEditor($('#tmTags', m), t, 'tasks');
+    wireTaskImages(m, t);
     $('#tmChk', m).onclick = () => { $('#tmStatus', m).value = t.status === 'done' ? 'todo' : 'done'; sync(); };
     $('#tmDel', m).onclick = () => { m.onclose = null; close(); deleteTask(t); };
     ta.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); close(); } });
     m.onclose = () => render();
   }, { cls: 'task-modal' });
+}
+// Screenshots attached to a task: kept as t.images (ids in the image store), shown under Details.
+function wireTaskImages(m, t) {
+  const box = $('#tmImgs', m);
+  const draw = () => {
+    const ids = t.images || [];
+    box.innerHTML = ids.map(id => `<div class="tm-img"><img data-fp="${esc(id)}" alt="" title="Click to view full size"><button class="tm-img-x" data-rm="${esc(id)}" title="Remove image">${ic('x')}</button></div>`).join('')
+      + `<button class="tm-img-add" title="Attach images (or paste / drop them on this window)">${ic('image')}<span>${ids.length ? 'Add' : 'Attach image'}</span></button>`;
+    Img.hydrate(box);
+  };
+  const save = () => { t.updated = Date.now(); DB.put('tasks', t); };
+  const add = async files => {
+    files = files.filter(f => f.type.startsWith('image/'));
+    if (!files.length) return;
+    for (const f of files) { const { id } = await Img.add(f); (t.images ||= []).push(id); }
+    save(); draw();
+  };
+  box.addEventListener('click', e => {
+    const rm = e.target.closest('[data-rm]');
+    if (rm) { t.images = (t.images || []).filter(x => x !== rm.dataset.rm); save(); draw(); return; }
+    if (e.target.closest('.tm-img-add')) {
+      const inp = $('#fileImg');
+      inp.value = '';
+      inp.onchange = () => add([...inp.files]);
+      inp.click();
+      return;
+    }
+    if (e.target.tagName === 'IMG') modal(`<img src="${esc(e.target.src)}" alt="">`, null, { cls: 'lightbox' });
+  });
+  m.addEventListener('paste', e => {
+    const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); add(files); }
+  });
+  m.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); m.classList.add('drop-on'); } });
+  m.addEventListener('dragleave', e => { if (!m.contains(e.relatedTarget)) m.classList.remove('drop-on'); });
+  m.addEventListener('drop', e => {
+    m.classList.remove('drop-on');
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); add(files); }
+  });
+  draw();
 }
 function deleteTask(t) {
   S.tasks = S.tasks.filter(x => x !== t);
@@ -903,6 +948,7 @@ function cardHTML(t) {
     t.due ? `<span class="due ${dueClass(t)}">${ic('calendar')}${dueLabel(t.due)}</span>` : '',
     ...(t.tags || []).map(x => `<span class="ni-tag">#${esc(x)}</span>`),
     t.desc?.trim() ? `<span class="muted" title="Has details">${ic('note')}</span>` : '',
+    t.images?.length ? `<span class="muted card-imgs" title="${t.images.length} image(s) attached">${ic('image')}${t.images.length > 1 ? t.images.length : ''}</span>` : '',
   ].join('');
   return `<div class="card ${t.status === 'done' ? 'is-done' : ''}" draggable="true" data-task="${t.id}">
     <div class="card-title">${esc(t.title)}</div>${meta ? `<div class="card-meta">${meta}</div>` : ''}</div>`;
@@ -1067,6 +1113,7 @@ async function buildExport({ label, notes, tasks, includeDone, includeQuick }) {
         const bits = [x.due && `due ${x.due}`, ...(x.tags || []).map(g => '#' + g)].filter(Boolean);
         L.push(`- [${x.status === 'done' ? 'x' : ' '}] **${x.title}**${bits.length ? ` _(${bits.join(', ')})_` : ''}`);
         if (x.desc?.trim()) L.push(...x.desc.trim().split('\n').map(l => '  ' + l));
+        for (const id of (x.images || []).filter(id => imgRecs.has(id))) { ctx.images.add(id); L.push(`  ![screenshot](images/${id}.${extOf(id)})`); }
       }
       L.push('');
     }

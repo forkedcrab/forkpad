@@ -94,6 +94,7 @@ function taskLine(t, withProject = false) {
 function taskBlock(t, withProject) {
   const L = [taskLine(t, withProject)];
   if (t.desc?.trim()) L.push(...t.desc.trim().split('\n').map(l => '  ' + l));
+  for (const id of t.images || []) L.push(`  ![screenshot](forkpad-image:${id})`);
   return L.join('\n');
 }
 function noteBlock(n) {
@@ -245,7 +246,7 @@ const tools = [
           if (list.length) L.push(`### ${STATUS[st]}`, '', ...list.map(t => taskBlock(t)), '');
         }
       }
-      const imgs = [];
+      const imgs = ts.flatMap(t => t.images || []);
       if (ns.length) {
         L.push('## Notes', '');
         for (const n of ns) { const b = noteBlock(n); imgs.push(...b.images); L.push(b.text, ''); }
@@ -280,13 +281,15 @@ const tools = [
   },
   {
     name: 'get_task', title: 'Get task', readOnly: true,
-    description: 'Full details of one task by id.',
+    description: 'Full details of one task by id, including attached screenshots (forkpad-image:<id>, view with get_image).',
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     run({ id }) {
       const t = findTask(id);
       const facts = [`id: \`${t.id}\``, `project: ${projName(t.projectId)}`, `status: ${STATUS[t.status] || t.status}`, t.due && `due: ${t.due}`,
         t.tags.length && `sections: ${t.tags.map(g => '#' + g).join(' ')}`, `created ${day(t.created)}, updated ${day(t.updated)}${t.doneAt ? `, done ${day(t.doneAt)}` : ''}`];
-      return `# ${t.title}\n\n${facts.filter(Boolean).map(f => '- ' + f).join('\n')}\n\n${t.desc?.trim() || '_(no description)_'}`;
+      const imgs = t.images || [];
+      return `# ${t.title}\n\n${facts.filter(Boolean).map(f => '- ' + f).join('\n')}\n\n${t.desc?.trim() || '_(no description)_'}`
+        + (imgs.length ? `\n\n${imgs.map(id => `![screenshot](forkpad-image:${id})`).join('\n')}` : '') + imageHint(imgs);
     },
   },
   {
@@ -326,7 +329,9 @@ const tools = [
       const f = store.imageFile(clean);
       if (!f) throw new UserError(`No image with id "${clean}".`);
       const note = allNotes().find(n => (n.html || '').includes(`data-fp="${clean}"`));
-      const caption = { type: 'text', text: `Image ${clean}${note ? ` from note "${note.title || 'Untitled'}" (${projName(note.projectId)})` : ''}. File: ${f.file}` };
+      const task = !note && allTasks().find(t => (t.images || []).includes(clean));
+      const from = note ? ` from note "${note.title || 'Untitled'}" (${projName(note.projectId)})` : task ? ` attached to task "${task.title}" (${task.id}, ${projName(task.projectId)})` : '';
+      const caption = { type: 'text', text: `Image ${clean}${from}. File: ${f.file}` };
       if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.type)) return [caption, { type: 'text', text: `It is ${f.type}, which can't be shown inline; open the file instead.` }];
       return [caption, { type: 'image', data: fs.readFileSync(f.file).toString('base64'), mimeType: f.type }];
     },
