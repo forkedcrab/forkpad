@@ -1,5 +1,5 @@
 /* ForkPad disk storage, shared by the helper server and the MCP server.
-   Layout: data/<store>/<id>.json for projects, notes and tasks; data/images/<id>.<ext>.
+   Layout: data/<store>/<id>.json for projects, notes, tasks and GDD boards; data/images/<id>.<ext>.
    One file per item keeps concurrent writers (app and Claude) from clobbering each other. */
 'use strict';
 const fs = require('fs');
@@ -8,7 +8,7 @@ const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA = path.resolve(process.env.FORKPAD_DATA || path.join(ROOT, 'data'));
-const STORES = ['projects', 'notes', 'tasks'];
+const STORES = ['projects', 'notes', 'tasks', 'boards'];
 const IMG_TYPES = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif' };
 const EXT_OF = Object.fromEntries(Object.entries(IMG_TYPES).map(([e, t]) => [t, e]));
 

@@ -373,6 +373,50 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(.75); curso
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
 
+/* ---------- GDD boards ---------- */
+.content.view-gdd { padding: 0; overflow: hidden; position: relative; height: 100%; }
+.gdd-host { position: absolute; inset: 0; }
+.gdd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.gdd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+.gdd-card { position: relative; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: border-color .12s; }
+.gdd-card:hover { border-color: var(--border2); }
+.gc-open { display: flex; flex-direction: column; width: 100%; min-width: 0; }
+.gc-open:focus-visible { outline-offset: -2px; border-radius: 14px; }
+.gc-thumb { display: grid; place-items: center; aspect-ratio: 16 / 10; background: var(--tb, #161412); color: var(--faint); overflow: hidden; border-bottom: 1px solid var(--border); }
+.gc-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gc-ph { width: 76%; height: auto; }
+.gc-body { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 13px; min-width: 0; }
+.gc-title { font-weight: 650; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--faint); font-size: 12.5px; }
+.gc-meta time { margin-left: auto; }
+.gc-acts { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.gdd-card:hover .gc-acts, .gdd-card:focus-within .gc-acts { opacity: 1; }
+.gc-acts .icon-btn { width: 30px; height: 30px; background: var(--panel); border: 1px solid var(--border2); }
+.gc-acts .icon-btn:hover { background: var(--panel3); }
+@media (hover: none) { .gc-acts { opacity: 1; } }
+.gdd-card.add { flex-direction: row; align-items: center; justify-content: center; gap: 8px; min-height: 200px; color: var(--muted); border-style: dashed; background: transparent; font-weight: 600; }
+.gdd-card.add:hover { color: var(--accent); border-color: var(--accent); }
+.gdd-empty .gc-thumb { width: 260px; border: 1px solid var(--border); border-radius: 14px; margin-bottom: 14px; }
+.proj-gdds { flex: 1; min-height: 0; overflow: auto; padding: 18px 24px 60px; }
+.proj-gdds .sec-head { gap: 16px; margin-bottom: 16px; }
+.proj-gdds .sec-head .sub { margin: 0; }
+.gdd-start { flex-direction: column; gap: 8px; margin: 0; }
+.gdd-start label { align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border2); border-radius: 10px; background: var(--bg); transition: border-color .12s; }
+.gdd-start label:hover { border-color: #5a5048; }
+.gdd-start label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.gdd-start input { margin-top: 3px; }
+.gdd-start label > span { display: flex; flex-direction: column; gap: 1px; }
+.gdd-start small { font-size: 12.5px; line-height: 1.4; }
+.gdd-from { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; margin: -2px 0 14px; border: 1px solid var(--border2); border-radius: 9px; background: var(--bg); color: var(--muted); font-size: 14px; transition: border-color .12s; }
+.gdd-from > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdd-from b { color: var(--text); font-weight: 600; }
+.gdd-from .ic:first-child { color: var(--accent); }
+.gdd-from:hover { border-color: var(--accent); color: var(--text); }
+.list-gdds { max-height: 28%; }
+.gdd-row { width: 100%; text-align: left; }
+.gdd-row time { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
+.card-gdd { display: inline-flex; }
+
 /* ---------- small screens ---------- */
 @media (max-width: 900px) {
   #app { grid-template-columns: 1fr; }
@@ -388,4 +432,6 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(.75); curso
   .home-cols { grid-template-columns: 1fr; }
   .page { padding: 22px 16px 60px; }
   .tabs { margin-left: 0; }
+  .gdd-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .proj-gdds { padding: 14px 16px 50px; }
 }

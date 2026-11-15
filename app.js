@@ -63,6 +63,7 @@ const ICONS = {
   link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  canvas: '<rect x="3" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="15" width="8" height="6" rx="1.5"/><circle cx="17" cy="6" r="3"/><path d="M7 9v4a2 2 0 0 0 2 2h4"/>',
 };
 const ic = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 const LOGO = $('.brand .logo').outerHTML;
@@ -72,10 +73,13 @@ const badge = (p, cls = '') => `<span class="proj-badge ${cls}" style="--c:${p.c
 const STATUSES = [{ id: 'todo', name: 'To do' }, { id: 'doing', name: 'In progress' }, { id: 'done', name: 'Done' }];
 
 /* ---------- state ---------- */
-const S = { projects: [], notes: [], tasks: [], view: { type: 'inbox' }, prevView: null, noteId: null, query: '', listSource: () => [] };
+const S = { projects: [], notes: [], tasks: [], boards: [], view: { type: 'inbox' }, prevView: null, noteId: null, query: '', listSource: () => [] };
 const proj = id => S.projects.find(p => p.id === id);
 const noteById = id => S.notes.find(n => n.id === id);
 const taskById = id => S.tasks.find(t => t.id === id);
+const boardById = id => S.boards.find(b => b.id === id);
+// The one open GDD editor: { id, item, el, ctl }. render() runs often, so it is kept, not remounted.
+let gddMount = null;
 const projectOptions = (sel, none = true) => (none ? '<option value="">No project</option>' : '') +
   S.projects.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
 
@@ -83,9 +87,9 @@ function makeNote(fields) {
   const now = Date.now();
   return { id: uid(), kind: 'note', projectId: null, title: '', html: '', text: '', tags: [], pinned: false, created: now, updated: now, ...fields };
 }
-function addTask({ projectId, title, status = 'todo', due = null, desc = '', tags = [] }) {
+function addTask({ projectId, title, status = 'todo', due = null, desc = '', tags = [], gdd = null }) {
   const order = Math.max(-1, ...S.tasks.filter(t => t.projectId === projectId && t.status === status).map(t => t.order)) + 1;
-  const t = { id: uid(), projectId, title, status, due, desc, tags, order, created: Date.now(), updated: Date.now() };
+  const t = { id: uid(), projectId, title, status, due, desc, tags, order, created: Date.now(), updated: Date.now(), ...(gdd?.boardId && { gdd: { boardId: gdd.boardId, ...(gdd.itemId && { itemId: gdd.itemId }) } }) };
   S.tasks.push(t);
   DB.put('tasks', t);
   return t;
@@ -106,6 +110,7 @@ function queueSave(id, fn) {
 function flushSaves() {
   for (const [, e] of pending) { clearTimeout(e.t); e.fn(); }
   pending.clear();
+  try { gddMount?.ctl?.flush?.(); } catch (err) { console.warn('GDD flush failed', err); }
 }
 
 /* ---------- images ---------- */
@@ -148,11 +153,13 @@ async function downscale(file, max = 1800) {
 }
 // Delete images no note references any more (skips fresh ones in case another tab is mid-edit).
 async function gcImages() {
+  if (!S.boardsOk) return; // boards couldn't be read, so we can't tell which images they use
   const imgs = await DB.all('images');
   const used = S.notes.map(n => n.html || '').join(' ');
-  const taskImgs = new Set(S.tasks.flatMap(t => t.images || []));
-  for (const i of imgs) if (!used.includes(`data-fp="${i.id}"`) && !taskImgs.has(i.id) && Date.now() - (i.created || 0) > 864e5) DB.del('images', i.id);
+  const keep = new Set([...S.tasks.flatMap(t => t.images || []), ...S.boards.flatMap(boardImageIds)]);
+  for (const i of imgs) if (!used.includes(`data-fp="${i.id}"`) && !keep.has(i.id) && Date.now() - (i.created || 0) > 864e5) DB.del('images', i.id);
 }
+const boardImageIds = b => [b.previewId, ...(b.items || []).filter(i => i.type === 'image').map(i => i.imageId)].filter(Boolean);
 
 /* ---------- rich text ---------- */
 const ALLOWED = new Set(['P', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'A', 'IMG', 'HR', 'DIV', 'SPAN']);
@@ -455,6 +462,7 @@ function go(view) {
   flushSaves();
   cleanupEmpty(S.noteId);
   if (view.type !== 'search') { $('#search').value = ''; S.query = ''; }
+  if (view.type === 'gdd' && S.view.type !== 'gdd') S.gddReturn = S.view;
   S.view = view;
   render();
 }
@@ -474,11 +482,13 @@ function clearSearch() {
 
 function render() {
   flushSaves();
-  if (S.view.type !== 'search') pref.set('view', S.view);
+  const v = S.view;
+  if (v.type !== 'search') { const { item, ...keep } = v; pref.set('view', keep); }
+  // Leaving the open board (or opening it on another item): close the editor before the DOM goes.
+  if (gddMount && (v.type !== 'gdd' || v.id !== gddMount.id || (v.item || null) !== gddMount.item)) unmountGdd();
   renderNav();
   const c = $('#content');
-  c.className = 'content view-' + S.view.type;
-  const v = S.view;
+  c.className = 'content view-' + v.type;
   switch (v.type) {
     case 'home': renderHome(c); break;
     case 'inbox': renderInbox(c); break;
@@ -489,6 +499,8 @@ function render() {
     case 'upcoming': renderUpcoming(c); break;
     case 'project': renderProject(c); break;
     case 'search': renderSearch(c); break;
+    case 'gdds': renderGdds(c); break;
+    case 'gdd': renderGdd(c); break;
   }
   $('#app').classList.remove('nav-open');
 }
@@ -497,7 +509,8 @@ function renderNav() {
   const v = S.view, t0 = todayStr();
   const open = S.tasks.filter(t => t.due && t.status !== 'done');
   const overdue = open.filter(t => t.due < t0).length, dueNow = open.filter(t => t.due <= t0).length;
-  const is = (type, id) => v.type === type && (id == null || v.id === id);
+  const vt = v.type === 'gdd' ? 'gdds' : v.type; // an open board keeps "GDDs" highlighted
+  const is = (type, id) => vt === type && (id == null || v.id === id);
   const item = (type, id, icon, label, count, cls = '') =>
     `<button class="nav-item ${is(type, id) ? 'active' : ''}" data-nav="${type}"${id != null ? ` data-id="${esc(id)}"` : ''}>${icon}<span class="lbl">${esc(label)}</span>${count ? `<em class="count ${cls}">${count}</em>` : ''}</button>`;
   const tags = tagCounts(S.notes.filter(n => n.kind === 'note'), S.tasks);
@@ -507,6 +520,7 @@ function renderNav() {
       ${item('home', null, ic('home'), 'Home', 0)}
       ${item('inbox', null, ic('bolt'), 'Quick thoughts', S.notes.filter(n => n.kind === 'quick').length)}
       ${item('notes', null, ic('note'), 'All notes', S.notes.filter(n => n.kind === 'note').length)}
+      ${item('gdds', null, ic('canvas'), 'GDDs', S.boards.length)}
       ${item('upcoming', null, ic('calendar'), 'Upcoming', dueNow, overdue ? 'hot' : '')}
     </div>
     <div class="nav-projects">
@@ -593,11 +607,12 @@ function renderHome(c) {
     const tasks = S.tasks.filter(t => t.projectId === p.id);
     const n = s => tasks.filter(t => t.status === s).length;
     const notes = S.notes.filter(x => x.projectId === p.id && x.kind === 'note').length;
+    const gdds = S.boards.filter(b => b.projectId === p.id).length;
     const pct = tasks.length ? Math.round(n('done') / tasks.length * 100) : 0;
     const next = tasks.filter(t => t.due && t.status !== 'done').sort((a, b) => a.due.localeCompare(b.due))[0];
     return `<button class="proj-card" data-nav="project" data-id="${p.id}" style="--c:${p.color}">
       <div class="pc-top">${badge(p, 'lg')}<span class="pc-name">${esc(p.name)}</span></div>
-      <div class="pc-stats"><span><b>${n('todo')}</b> to do</span><span><b>${n('doing')}</b> in progress</span><span><b>${notes}</b> notes</span></div>
+      <div class="pc-stats"><span><b>${n('todo')}</b> to do</span><span><b>${n('doing')}</b> in progress</span><span><b>${notes}</b> notes</span>${gdds ? `<span><b>${gdds}</b> GDD${gdds > 1 ? 's' : ''}</span>` : ''}</div>
       <div class="pc-bar" title="${pct}% done"><i style="width:${pct}%"></i></div>
       <div class="pc-foot">${next ? `<span class="due ${dueClass(next)}">${ic('calendar')}${dueLabel(next.due)}</span><span class="pc-next">${esc(next.title)}</span>` : '<span class="muted">No upcoming due dates</span>'}</div>
     </button>`;
@@ -651,7 +666,7 @@ function thoughtToTask(n) {
 }
 
 /* ---------- notes list + editor ---------- */
-function renderNotes(c, source, title, { sub = '', tasks = null, exportable = null } = {}) {
+function renderNotes(c, source, title, { sub = '', tasks = null, boards = null, exportable = null } = {}) {
   S.listSource = source;
   const notes = sortNotes(source());
   if (!notes.some(n => n.id === S.noteId)) S.noteId = notes[0]?.id || null;
@@ -661,7 +676,9 @@ function renderNotes(c, source, title, { sub = '', tasks = null, exportable = nu
       <div class="list-head"><div class="lh-title"><h2>${esc(title)}</h2>${sub ? `<p class="sub">${sub}</p>` : ''}</div>
         <div class="lh-acts">${exportable ? `<button class="icon-btn" data-act="export-list" title="Export for Claude">${ic('spark')}</button>` : ''}
         <button class="btn primary sm" data-act="new-note" title="New note (Alt+N)">${ic('plus')}New</button></div></div>
-      ${tasks?.length ? `<div class="list-tasks"><div class="list-sub">Tasks</div>${tasks.slice(0, 12).map(taskRowHTML).join('')}</div><div class="list-sub pad">Notes</div>` : ''}
+      ${boards?.length ? `<div class="list-tasks list-gdds"><div class="list-sub">GDD boards</div>${boards.slice(0, 8).map(gddRowHTML).join('')}</div>` : ''}
+      ${tasks?.length ? `<div class="list-tasks"><div class="list-sub">Tasks</div>${tasks.slice(0, 12).map(taskRowHTML).join('')}</div>` : ''}
+      ${tasks?.length || boards?.length ? '<div class="list-sub pad">Notes</div>' : ''}
       <div class="note-list" id="noteList"></div>
     </div>
     <div class="editor-pane" id="editorPane"></div>
@@ -804,9 +821,10 @@ function setStatus(t, status) {
   t.order = Math.max(-1, ...S.tasks.filter(x => x !== t && x.projectId === t.projectId && x.status === status).map(x => x.order)) + 1;
   t.doneAt = status === 'done' ? Date.now() : null;
 }
-function openTask(t) {
+function openTask(t, after) {
   if (!t) return;
   t.tags ||= [];
+  const gb = t.gdd && boardById(t.gdd.boardId);
   modal(`
     <div class="tm-head">
       <button class="chk lg ${t.status === 'done' ? 'on' : ''}" id="tmChk" title="Mark done">${ic('check')}</button>
@@ -817,6 +835,7 @@ function openTask(t) {
       <label class="field"><span>Due date</span><input type="date" id="tmDue" value="${t.due || ''}"></label>
       <label class="field"><span>Project</span><select id="tmProj">${projectOptions(t.projectId, false)}</select></label>
     </div>
+    ${gb ? `<button type="button" class="gdd-from" id="tmGdd" title="Open the board on this item">${ic('canvas')}<span>From GDD: <b>${esc(gb.title)}</b></span>${ic('arrow')}</button>` : ''}
     <div class="field"><span>Tags / sections</span><div class="ed-tags boxed" id="tmTags"></div></div>
     <label class="field"><span>Details</span><textarea id="tmDesc" rows="6" placeholder="Steps, links, repro notes… paste or drop images">${esc(t.desc || '')}</textarea></label>
     <div class="tm-imgs" id="tmImgs"></div>
@@ -842,9 +861,10 @@ function openTask(t) {
     wireTagEditor($('#tmTags', m), t, 'tasks');
     wireTaskImages(m, t);
     $('#tmChk', m).onclick = () => { $('#tmStatus', m).value = t.status === 'done' ? 'todo' : 'done'; sync(); };
-    $('#tmDel', m).onclick = () => { m.onclose = null; close(); deleteTask(t); };
+    $('#tmDel', m).onclick = () => { m.onclose = null; close(); deleteTask(t); after?.(); };
+    if (gb) $('#tmGdd', m).onclick = () => { m.onclose = null; close(); go({ type: 'gdd', id: gb.id, item: t.gdd.itemId || null }); after?.(); };
     ta.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); close(); } });
-    m.onclose = () => render();
+    m.onclose = () => { render(); after?.(); };
   }, { cls: 'task-modal' });
 }
 // Screenshots attached to a task: kept as t.images (ids in the image store), shown under Details.
@@ -903,6 +923,7 @@ function renderProject(c) {
   const filter = pref.get('filter.' + p.id, []);
   const allTasks = S.tasks.filter(t => t.projectId === p.id);
   const allNotes = S.notes.filter(n => n.projectId === p.id && n.kind === 'note');
+  const boards = S.boards.filter(b => b.projectId === p.id).sort((a, b) => b.updated - a.updated);
   const pass = x => !filter.length || filter.some(f => x.tags?.includes(f));
   const done = allTasks.filter(t => t.status === 'done').length;
   const pct = allTasks.length ? Math.round(done / allTasks.length * 100) : 0;
@@ -915,19 +936,26 @@ function renderProject(c) {
       <div class="tabs">
         <button class="tab ${tab === 'board' ? 'on' : ''}" data-act="tab" data-tab="board">${ic('board')}Board<em>${allTasks.filter(t => t.status !== 'done').length}</em></button>
         <button class="tab ${tab === 'notes' ? 'on' : ''}" data-act="tab" data-tab="notes">${ic('note')}Notes<em>${allNotes.length}</em></button>
+        <button class="tab ${tab === 'gdd' ? 'on' : ''}" data-act="tab" data-tab="gdd">${ic('canvas')}GDD<em>${boards.length}</em></button>
       </div>
     </div>
-    <div class="sections">
+    ${tab === 'gdd' ? '' : `<div class="sections">
       <span class="sec-label">Sections</span>
       <button class="sec ${filter.length ? '' : 'on'}" data-act="sec" data-tag="">All</button>
       ${sections.map(([t, n]) => `<button class="sec ${filter.includes(t) ? 'on' : ''}" data-act="sec" data-tag="${esc(t)}">#${esc(t)}<em>${n}</em></button>`).join('')}
       <span class="sec-hint">${sections.length ? 'Ctrl-click to pick several' : 'Tag notes or tasks (e.g. <b>bugs</b>, <b>ideas</b>) to split this project into sections'}</span>
-    </div>
+    </div>`}
     <div class="proj-body" id="projBody"></div>`;
   const body = $('#projBody', c);
   if (tab === 'board') {
     body.innerHTML = boardHTML(allTasks.filter(pass), filter);
     wireBoard($('#board', body));
+  } else if (tab === 'gdd') {
+    body.innerHTML = `<div class="proj-gdds">
+      <div class="sec-head"><p class="sub">Visual design boards for ${esc(p.name)}. Claude can read them and turn them into tasks.</p>
+        <button class="btn primary sm" data-act="new-gdd" data-project="${p.id}">${ic('plus')}New GDD</button></div>
+      ${gddGridHTML(boards, { showProject: false, projectId: p.id })}</div>`;
+    wireGddCards(body, boards);
   } else {
     renderNotes(body, () => S.notes.filter(n => n.projectId === p.id && n.kind === 'note' && pass(n)), filter.length ? filter.map(f => '#' + f).join(' ') : 'Project notes');
   }
@@ -949,6 +977,7 @@ function cardHTML(t) {
     ...(t.tags || []).map(x => `<span class="ni-tag">#${esc(x)}</span>`),
     t.desc?.trim() ? `<span class="muted" title="Has details">${ic('note')}</span>` : '',
     t.images?.length ? `<span class="muted card-imgs" title="${t.images.length} image(s) attached">${ic('image')}${t.images.length > 1 ? t.images.length : ''}</span>` : '',
+    t.gdd ? `<span class="muted card-gdd" title="${esc(boardById(t.gdd.boardId) ? 'From GDD: ' + boardById(t.gdd.boardId).title : 'From a GDD board')}">${ic('canvas')}</span>` : '',
   ].join('');
   return `<div class="card ${t.status === 'done' ? 'is-done' : ''}" draggable="true" data-task="${t.id}">
     <div class="card-title">${esc(t.title)}</div>${meta ? `<div class="card-meta">${meta}</div>` : ''}</div>`;
@@ -1009,9 +1038,12 @@ function openProjectModal(p) {
     $('#pmName', m).onkeydown = e => { if (e.key === 'Enter') ok(); };
     if (!isNew) $('#pmDel', m).onclick = async () => {
       const notes = S.notes.filter(n => n.projectId === p.id), tasks = S.tasks.filter(t => t.projectId === p.id);
-      if (!await confirmDialog(`Delete “${p.name}”?`, `This also deletes its ${tasks.length} task(s) and ${notes.length} note(s). It can't be undone (unless you have a backup).`)) return;
+      const boards = S.boards.filter(b => b.projectId === p.id);
+      if (!await confirmDialog(`Delete “${p.name}”?`, `This also deletes its ${tasks.length} task(s) and ${notes.length} note(s).${boards.length ? ` Its GDD boards are kept (${boards.length}), just no longer linked.` : ''} It can't be undone (unless you have a backup).`)) return;
       notes.forEach(n => DB.del('notes', n.id));
       tasks.forEach(t => DB.del('tasks', t.id));
+      // Design work is never deleted with a project, only unlinked.
+      boards.forEach(b => { b.projectId = null; touchMeta(b); DB.put('boards', b).catch(() => {}); });
       DB.del('projects', p.id);
       S.notes = S.notes.filter(n => !notes.includes(n));
       S.tasks = S.tasks.filter(t => !tasks.includes(t));
@@ -1021,6 +1053,404 @@ function openProjectModal(p) {
     };
   });
 }
+
+/* ---------- GDD boards ---------- */
+// Visual game design boards. The canvas editor (gdd.js, window.GDD) and the PNG renderer
+// (gdd-render.js, window.GDDRender) are separate files; this part is the gallery, the host the
+// editor talks to, previews, and the links between boards, projects and tasks. See PLAN.md.
+const THUMB_PH = `<svg class="gc-ph" viewBox="0 0 160 100" aria-hidden="true">
+  <g fill="currentColor" opacity=".28">${[...Array(8)].map((_, i) => [...Array(5)].map((_, j) => `<circle cx="${10 + i * 20}" cy="${10 + j * 20}" r="1.2"/>`).join('')).join('')}</g>
+  <rect x="16" y="16" width="62" height="42" rx="6" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"/>
+  <rect x="24" y="26" width="30" height="16" rx="3" fill="#f7d774" opacity=".7"/>
+  <rect x="94" y="22" width="48" height="26" rx="13" fill="none" stroke="#ff8f1f" stroke-width="2"/>
+  <path d="M78 40c10 0 14 8 20 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"/>
+  <path d="m93 61 5 6 2-8" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"/>
+  <rect x="88" y="68" width="44" height="18" rx="4" fill="#8cc8ff" opacity=".55"/>
+  <path d="M22 78c8-8 14 6 22-2s12 4 18-2" fill="none" stroke="#ff8f1f" stroke-width="2" stroke-linecap="round"/>
+</svg>`;
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const gddTasks = id => S.tasks.filter(t => t.gdd?.boardId === id);
+const isStale = b => snap.broken.has(b.id) || !b.previewId || (b.previewAt || 0) < b.updated - 1500;
+// Title and project changes don't alter the picture, so a fresh preview stays fresh.
+function touchMeta(b) { const fresh = !isStale(b); b.updated = Date.now(); if (fresh) b.previewAt = b.updated; }
+const refreshGdd = () => { try { gddMount?.ctl?.refresh?.(); } catch (err) { console.warn('GDD refresh failed', err); } };
+
+function thumbHTML(b) {
+  const u = b.items.length && b.previewId && !snap.broken.has(b.id) && (Img.urls.get(b.previewId) || DB.imageURL(b.previewId));
+  return u ? `<img src="${esc(u)}" alt="" draggable="false">` : THUMB_PH;
+}
+function gddCardHTML(b, showProject) {
+  const p = showProject && proj(b.projectId), ts = gddTasks(b.id), done = ts.filter(t => t.status === 'done').length;
+  const bg = GDDModel.BACKGROUNDS[b.style?.background]?.bg || GDDModel.BACKGROUNDS.dark.bg;
+  return `<div class="gdd-card" data-id="${b.id}">
+    <button class="gc-open" data-nav="gdd" data-id="${b.id}" title="Open ${esc(b.title)}">
+      <span class="gc-thumb" style="--tb:${bg}">${thumbHTML(b)}</span>
+      <span class="gc-body"><span class="gc-title">${esc(b.title || 'Untitled GDD')}</span>
+        <span class="gc-meta">${p ? `<span class="chip" style="--c:${p.color}">${esc(p.name)}</span>` : ''}<span>${plural(b.items.length, 'item')}</span>${ts.length ? `<span title="Tasks made from this board">${done}/${ts.length} tasks</span>` : ''}<time>${rel(b.updated)}</time></span></span>
+    </button>
+    <span class="gc-acts"><button class="icon-btn" data-act="gdd-edit" data-id="${b.id}" title="Rename or move to a project">${ic('edit')}</button><button class="icon-btn danger" data-act="gdd-del" data-id="${b.id}" title="Delete">${ic('trash')}</button></span>
+  </div>`;
+}
+function gddGridHTML(boards, { showProject = true, projectId = null } = {}) {
+  return `<div class="gdd-grid">${boards.map(b => gddCardHTML(b, showProject)).join('')}
+    <button class="gdd-card add" data-act="new-gdd"${projectId ? ` data-project="${projectId}"` : ''}>${ic('plus')}<span>New GDD</span></button></div>`;
+}
+const gddRowHTML = b => {
+  const p = proj(b.projectId);
+  return `<button class="task-row gdd-row" data-nav="gdd" data-id="${b.id}">${ic('canvas', 'accent')}<span class="tr-title">${esc(b.title)}</span>
+    ${p ? `<span class="chip" style="--c:${p.color}">${esc(p.name)}</span>` : ''}<time>${rel(b.updated)}</time></button>`;
+};
+// Fills in previews that need loading or rendering for the cards on screen.
+function wireGddCards(root, boards) {
+  const grid = $('.gdd-grid', root); if (!grid) return;
+  // a preview image that won't load (deleted, or a stale id): show the placeholder and render a new one
+  grid.addEventListener('error', e => {
+    const card = e.target.closest?.('.gdd-card'); if (!card || e.target.tagName !== 'IMG') return;
+    snap.broken.add(card.dataset.id);
+    e.target.outerHTML = THUMB_PH;
+    queuePreviews([boardById(card.dataset.id)].filter(Boolean));
+  }, true);
+  // IndexedDB mode has no URL until the blob is read
+  for (const b of boards) if (b.items.length && b.previewId && !snap.broken.has(b.id) && !Img.urls.has(b.previewId) && !DB.imageURL(b.previewId)) {
+    Img.url(b.previewId).then(u => { if (u) updateThumbs(b); else { snap.broken.add(b.id); queuePreviews([b]); } }).catch(() => {});
+  }
+  queuePreviews(boards);
+}
+function updateThumbs(b) {
+  $$(`.gdd-card[data-id="${b.id}"] .gc-thumb`).forEach(el => { el.innerHTML = thumbHTML(b); });
+}
+
+function renderGdds(c) {
+  const boards = [...S.boards].sort((a, b) => b.updated - a.updated);
+  c.innerHTML = `<div class="page gdd-page">
+    <div class="page-head gdd-head"><div><h1>${ic('canvas', 'accent')} GDD boards</h1>
+      <p class="sub">Game design docs on a canvas: images, notes, arrows, shapes and doodles. Claude can read them and plan the tasks.</p></div>
+      ${boards.length ? `<button class="btn primary" data-act="new-gdd">${ic('plus')}New GDD</button>` : ''}</div>
+    ${boards.length ? gddGridHTML(boards) : `<div class="empty tall gdd-empty"><span class="gc-thumb">${THUMB_PH}</span><h3>No GDDs yet</h3>
+      <p>Lay out your next game idea: drop in reference images, connect ideas with arrows, explain mechanics in notes.<br>The template starts you off with the usual sections.</p>
+      <button class="btn primary" data-act="new-gdd">${ic('plus')}New GDD</button></div>`}
+  </div>`;
+  wireGddCards(c, boards);
+}
+function newGddModal(projectId = null) {
+  if (!window.GDDModel) { toast("The GDD files didn't load. Reload ForkPad"); return; }
+  modal(`<h2>${ic('canvas', 'accent')} New GDD</h2>
+    <label class="field"><span>Game or idea</span><input id="ngTitle" placeholder="e.g. Cozy space farming roguelite" maxlength="120" autofocus></label>
+    <label class="field"><span>Project</span><select id="ngProj">${projectOptions(projectId)}</select></label>
+    <div class="field"><span>Start from</span><div class="checks gdd-start">
+      <label><input type="radio" name="ngTpl" value="gdd" checked><span><b>GDD template</b><small class="muted">Sections for pitch, core loop, mechanics, characters, world, art, progression and scope</small></span></label>
+      <label><input type="radio" name="ngTpl" value="blank"><span><b>Blank canvas</b><small class="muted">An empty board</small></span></label>
+    </div></div>
+    <footer><span class="spacer"></span><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="ngOk">Create GDD</button></footer>`, (m, close) => {
+    const ok = async () => {
+      const b = GDDModel.newBoard({ title: $('#ngTitle', m).value.trim() || 'Untitled GDD', projectId: $('#ngProj', m).value || null, template: $('input[name=ngTpl]:checked', m).value });
+      S.boards.push(b);
+      close();
+      await DB.put('boards', b).catch(() => {});
+      go({ type: 'gdd', id: b.id });
+    };
+    $('#ngOk', m).onclick = ok;
+    $('#ngTitle', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } };
+  });
+}
+function editGddModal(b) {
+  if (!b) return;
+  modal(`<h2>Edit GDD</h2>
+    <label class="field"><span>Title</span><input id="egTitle" value="${esc(b.title)}" maxlength="120" autofocus></label>
+    <label class="field"><span>Project</span><select id="egProj">${projectOptions(b.projectId)}</select></label>
+    <footer><button class="btn ghost danger" id="egDel">${ic('trash')}Delete</button><span class="spacer"></span>
+      <button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="egOk">Save</button></footer>`, (m, close) => {
+    const ok = () => {
+      b.title = $('#egTitle', m).value.trim() || 'Untitled GDD';
+      b.projectId = $('#egProj', m).value || null;
+      touchMeta(b);
+      DB.put('boards', b).catch(() => {});
+      close(); render();
+    };
+    $('#egOk', m).onclick = ok;
+    $('#egTitle', m).onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } };
+    $('#egDel', m).onclick = () => { close(); deleteBoard(b); };
+  });
+}
+async function deleteBoard(b) {
+  if (!b) return;
+  const n = gddTasks(b.id).length;
+  if (!await confirmDialog(`Delete “${b.title}”?`, `The board and everything on it is deleted.${n ? ` The ${plural(n, 'task')} made from it ${n === 1 ? 'stays' : 'stay'} on its project.` : ''}`)) return;
+  if (gddMount?.id === b.id) { S.view = { type: 'gdds' }; unmountGdd(); }
+  clearTimeout(snap.timers.get(b.id)); snap.timers.delete(b.id);
+  S.boards = S.boards.filter(x => x !== b);
+  DB.del('boards', b.id).catch(() => {});
+  if (b.previewId) { dropImage(b.previewId); b.previewId = null; b.previewAt = 0; }
+  render();
+  toast('GDD deleted', 'Undo', () => { S.boards.push(b); DB.put('boards', b).catch(() => {}); render(); });
+}
+
+/* the open board */
+function renderGdd(c) {
+  const v = S.view, b = boardById(v.id);
+  if (!b) { go({ type: 'gdds' }); return; }
+  if (gddMount) { if (gddMount.el.isConnected) return; unmountGdd(); } // already open: render() runs often
+  if (!window.GDD?.mount) {
+    c.innerHTML = `<div class="empty">${LOGO}<h3>The GDD editor didn't load</h3><p>gdd.js is missing or failed to start. Reload ForkPad, or update it if this keeps happening.</p>
+      <button class="btn" data-nav="gdds">Back to GDDs</button></div>`;
+    return;
+  }
+  c.innerHTML = '<div class="gdd-host"></div>';
+  const el = c.firstElementChild;
+  try {
+    const ctl = GDD.mount(el, b, gddHost, { focusItem: v.item || null });
+    gddMount = { id: b.id, item: v.item || null, el, ctl };
+  } catch (err) {
+    console.error('GDD editor failed', err);
+    c.innerHTML = `<div class="empty">${LOGO}<h3>This GDD couldn't be opened</h3><p>${esc(err?.message || 'The editor ran into a problem.')}</p>
+      <button class="btn" data-nav="gdds">Back to GDDs</button></div>`;
+  }
+}
+let gddDiscard = null; // board id whose last editor save must be dropped (loading someone else's version)
+function unmountGdd() {
+  const m = gddMount; if (!m) return;
+  gddMount = null; // first, so a flush from destroy() can't reach the closed editor again
+  try { m.ctl?.destroy?.(); } catch (err) { console.warn('GDD destroy failed', err); }
+  m.el.remove();
+  // leaving the board: take its snapshot now so the gallery is up to date
+  if (snap.timers.has(m.id)) { clearTimeout(snap.timers.get(m.id)); snap.timers.delete(m.id); snapshotBoard(m.id); }
+}
+
+/* snapshots: a PNG of each board, for the gallery and for Claude (get_gdd) */
+const snap = { timers: new Map(), running: new Set(), again: new Set(), broken: new Set(), failed: new Set(), queue: [], pumping: false };
+const imgData = new Map(); // image id -> data URL (images never change under an id)
+async function resolveImage(id) {
+  if (imgData.has(id)) return imgData.get(id);
+  const rec = await DB.get('images', id);
+  if (!rec?.blob) return null;
+  const url = await blobToDataURL(rec.blob);
+  if (imgData.size >= 40) imgData.delete(imgData.keys().next().value);
+  imgData.set(id, url);
+  return url;
+}
+function dropImage(id) {
+  DB.del('images', id).catch(() => {});
+  const u = Img.urls.get(id);
+  if (u) { URL.revokeObjectURL(u); Img.urls.delete(id); }
+  imgData.delete(id);
+}
+function scheduleSnapshot(id, ms = 2000) {
+  clearTimeout(snap.timers.get(id));
+  snap.timers.set(id, setTimeout(() => { snap.timers.delete(id); snapshotBoard(id); }, ms));
+}
+// Renders the board and stores the PNG as its new preview. Resolves true/false, or null when one
+// is already running (it re-runs after). Never throws: a failed snapshot must not break editing.
+async function snapshotBoard(id) {
+  if (snap.running.has(id)) { snap.again.add(id); return null; }
+  const b = boardById(id);
+  if (!b || !window.GDDRender?.toPNG) return false;
+  snap.running.add(id);
+  let ok = false;
+  try {
+    const from = b.updated;
+    const blob = await GDDRender.toPNG(b, { resolveImage, maxSide: 2000 });
+    const live = boardById(id);
+    if (blob && live) {
+      const pid = uid(), now = Date.now(), old = live.previewId;
+      await DB.put('images', { id: pid, blob, created: now });
+      // previewAt tells which edit the picture shows; updated is left alone (a snapshot isn't an edit)
+      const at = upd => upd > from ? from : now;
+      Object.assign(live, { previewId: pid, previewAt: at(live.updated) });
+      let rec = live;
+      if (gddMount?.id !== id) { // a closed board: if the file got newer meanwhile (Claude), patch that instead
+        const disk = await DB.get('boards', id).catch(() => null);
+        if (disk && disk.updated > live.updated) rec = Object.assign(disk, { previewId: pid, previewAt: at(disk.updated) });
+      }
+      await DB.put('boards', rec);
+      if (old && old !== pid) dropImage(old);
+      snap.broken.delete(id);
+      updateThumbs(live);
+      ok = true;
+    }
+  } catch (err) { console.warn('GDD snapshot failed', err); }
+  finally {
+    snap.running.delete(id);
+    if (snap.again.delete(id)) scheduleSnapshot(id, 300);
+  }
+  return ok;
+}
+// Stale previews of the cards on screen are rendered lazily, one board at a time.
+function queuePreviews(boards) {
+  if (!window.GDDRender?.toPNG) return;
+  for (const b of boards) if (b.items.length && isStale(b) && !snap.failed.has(b.id) && !snap.queue.includes(b.id)) snap.queue.push(b.id);
+  pumpPreviews();
+}
+async function pumpPreviews() {
+  if (snap.pumping) return;
+  snap.pumping = true;
+  try {
+    while (snap.queue.length) {
+      const id = snap.queue.shift(), b = boardById(id);
+      if (!b || !isStale(b) || gddMount?.id === id) continue;
+      if (await snapshotBoard(id) === false) snap.failed.add(id);
+    }
+  } finally { snap.pumping = false; }
+}
+
+// Claude edited the boards on disk. The open board is never overwritten in place: the editor decides.
+let gddPending = null; // a newer outside version of the open board, held until the editor is idle
+function syncBoards(fresh) {
+  const open = gddMount && boardById(gddMount.id);
+  const disk = open && fresh.find(b => b.id === open.id);
+  if (open && !disk) { S.boards = mergeInto(S.boards, fresh); goneOutside(open); return; }
+  S.boards = mergeInto(S.boards, fresh, open || null);
+  // our own saves come back with the same (or an older) updated; only a newer one is someone else's
+  if (!disk || !(disk.updated > open.updated)) return;
+  gddPending = disk;
+  retryGddReload();
+}
+// reload() edits the editor's board (`open`, already in S.boards) in place, so nothing is swapped.
+// Refused while the editor is busy (typing, dragging): wait and try again. Refused while idle, or
+// edited locally since, means unsaved or newer local work: then the user picks.
+function retryGddReload() {
+  const disk = gddPending;
+  if (!disk) return;
+  if (gddMount?.id !== disk.id) { gddPending = null; return; }
+  if (gddBusy()) return;
+  gddPending = null;
+  const open = boardById(disk.id);
+  let took = false;
+  if (open && disk.updated > open.updated) {
+    try { took = typeof gddMount.ctl?.reload === 'function' && gddMount.ctl.reload(disk) !== false; } catch (err) { console.warn('GDD reload failed', err); }
+  }
+  if (!took) toast('This GDD was also changed outside ForkPad', 'Load theirs', () => loadTheirs(disk));
+}
+// Claude deleted the open board. Close it (its file is gone), but keep the object for a 'Keep it'.
+function goneOutside(b) {
+  gddPending = null;
+  clearTimeout(snap.timers.get(b.id)); snap.timers.delete(b.id);
+  gddDiscard = b.id; unmountGdd(); gddDiscard = null;
+  S.boards = S.boards.filter(x => x !== b);
+  b.previewId = null; b.previewAt = 0; // the connector already deleted the preview image
+  if (S.view.type === 'gdd' && S.view.id === b.id) S.view = { type: 'gdds' };
+  render();
+  toast('This GDD was deleted outside ForkPad', 'Keep it', () => {
+    b.updated = Date.now();
+    if (!boardById(b.id)) S.boards.push(b);
+    DB.put('boards', b).catch(() => {});
+    scheduleSnapshot(b.id);
+    render();
+  });
+}
+function loadTheirs(disk) {
+  gddPending = null;
+  if (gddMount?.id === disk.id) { gddDiscard = disk.id; unmountGdd(); gddDiscard = null; }
+  disk.updated = Date.now(); // newer than anything the closed editor wrote
+  const i = S.boards.findIndex(b => b.id === disk.id);
+  if (i >= 0) S.boards[i] = disk; else S.boards.push(disk);
+  DB.put('boards', disk).catch(() => {});
+  scheduleSnapshot(disk.id);
+  render();
+}
+
+// Asks which project a task from an unlinked board goes to; the board gets linked to it too.
+function pickProjectForBoard(board) {
+  return new Promise(res => {
+    let out = null;
+    modal(`<h2>Which project gets this task?</h2>
+      <p class="muted small">“${esc(board.title)}” isn't linked to a project yet. Pick one and the GDD is linked to it as well.</p>
+      <label class="field"><span>Project</span><select id="gpProj"><option value="">New project “${esc(board.title.slice(0, 80))}”</option>${projectOptions(null, false)}</select></label>
+      <footer><span class="spacer"></span><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="gpOk">Add task</button></footer>`, (m, close) => {
+      $('#gpOk', m).onclick = async () => {
+        let pid = $('#gpProj', m).value;
+        if (!pid) {
+          const p = { id: uid(), name: board.title.slice(0, 80) || 'My game', color: COLORS[S.projects.length % COLORS.length], created: Date.now() };
+          S.projects.push(p); await DB.put('projects', p).catch(() => {}); pid = p.id;
+        }
+        out = pid; close();
+      };
+      m.onclose = () => res(out);
+    });
+  });
+}
+function gddPrompt(b) {
+  const p = proj(b.projectId);
+  return `Please read my ForkPad GDD "${b.title}" (id ${b.id}) with the ForkPad connector: call get_gdd, look at the board snapshot, and open the images on it with get_image so you see the layout, the diagrams and any doodles.
+
+Then turn it into a build plan:
+1. ${p ? `Use the ForkPad project "${p.name}" it is linked to.` : 'Create a ForkPad project for this game (or reuse a matching one) and link the GDD to it with update_gdd.'}
+2. Add concrete tasks with add_tasks, in the order I should build them (first playable first). Keep each one to the point: what to build, and how I can tell it is done.
+3. Tag every task with its GDD section (for example #core-loop, #mechanics, #art) and set gdd_item to the board item it comes from.
+4. Skip anything that already has a linked task (get_gdd lists them).
+
+Finish with a short summary of the plan and any open design questions.`;
+}
+
+// What the editor can ask of the app (contract in PLAN.md).
+const gddHost = {
+  save(board) {
+    if (!board?.id || gddDiscard === board.id) return;
+    const i = S.boards.findIndex(x => x.id === board.id);
+    if (i < 0) S.boards.push(board); else S.boards[i] = board; // the editor's object is the live one
+    DB.put('boards', board).catch(err => console.warn('GDD save failed', err));
+    scheduleSnapshot(board.id);
+  },
+  back() {
+    const r = S.gddReturn;
+    go(r && !['search', 'gdd'].includes(r.type) ? r : { type: 'gdds' });
+  },
+  imageURL: id => Img.url(id),
+  async addImage(file) {
+    const { id, url } = await Img.add(file);
+    const [width, height] = await new Promise(res => {
+      const im = new Image();
+      im.onload = () => res([im.naturalWidth, im.naturalHeight]);
+      im.onerror = () => res([0, 0]);
+      im.src = url;
+    });
+    return { id, url, width, height };
+  },
+  projects: () => S.projects.map(({ id, name, color }) => ({ id, name, color })),
+  tasksFor: boardId => gddTasks(boardId),
+  openTask: task => openTask(typeof task === 'string' ? taskById(task) : task, refreshGdd),
+  // Returns the Task right away when the board has a project, otherwise a Promise<Task|null>
+  // after asking for one (so callers should await it).
+  createTask({ title = '', desc = '', projectId = null, gdd = null } = {}) {
+    const board = boardById(gdd?.boardId) || (gddMount && boardById(gddMount.id));
+    const make = pid => {
+      const [first = '', ...rest] = String(title).trim().split('\n');
+      const t = addTask({ projectId: pid, title: first.trim().slice(0, 200) || 'Untitled task', desc: desc || rest.join('\n').trim(), gdd: gdd?.boardId ? gdd : board && { boardId: board.id } });
+      renderNav();
+      refreshGdd();
+      toast('Task added', 'Open board', () => { pref.set('tab.' + pid, 'board'); go({ type: 'project', id: pid }); });
+      return t;
+    };
+    const pid = [projectId, board?.projectId].find(x => x && proj(x));
+    if (pid) return make(pid);
+    if (!board) return null;
+    return pickProjectForBoard(board).then(id => {
+      if (!id) return null;
+      gddHost.setProject(board, id);
+      return make(id);
+    });
+  },
+  setProject(board, projectId) {
+    board.projectId = projectId && proj(projectId) ? projectId : null;
+    touchMeta(board);
+    DB.put('boards', board).catch(() => {});
+    renderNav();
+  },
+  async exportPNG(board) {
+    if (!window.GDDRender?.toPNG) { toast("The board renderer didn't load"); return; }
+    try {
+      download(await GDDRender.toPNG(board, { resolveImage }), `forkpad-gdd-${slug(board.title || 'board')}.png`);
+      toast('PNG exported');
+    } catch (err) { console.warn('GDD export failed', err); toast("Couldn't export this board as a PNG"); }
+  },
+  async askClaude(board) {
+    try { gddMount?.ctl?.flush?.(); } catch { /* the save below still runs */ }
+    // a fresh snapshot, so Claude sees what is on screen now
+    clearTimeout(snap.timers.get(board.id)); snap.timers.delete(board.id);
+    snapshotBoard(board.id);
+    if (await copyText(gddPrompt(board))) toast('Prompt copied, paste it into Claude Code');
+    else toast("Couldn't access the clipboard");
+  },
+};
 
 /* ---------- upcoming & search ---------- */
 function renderUpcoming(c) {
@@ -1045,8 +1475,9 @@ function searchHay(x) {
 function renderSearch(c) {
   const toks = S.query.toLowerCase().split(/\s+/).filter(Boolean);
   const hit = x => toks.every(t => searchHay(x).includes(t));
+  const boardHit = b => { const hay = (GDDModel.boardText(b) + ' ' + (proj(b.projectId)?.name || '')).toLowerCase(); return toks.every(t => hay.includes(t)); };
   renderNotes(c, () => S.notes.filter(hit), 'Search', {
-    sub: `“${esc(S.query)}”`, tasks: S.tasks.filter(hit),
+    sub: `“${esc(S.query)}”`, tasks: S.tasks.filter(hit), boards: S.boards.filter(boardHit).sort((a, b) => b.updated - a.updated),
     exportable: { label: `Search “${S.query}”`, search: hit },
   });
 }
@@ -1095,7 +1526,7 @@ function htmlToMd(html, ctx) {
   div.innerHTML = html;
   return nodeToMd(div, ctx).replace(/\n{3,}/g, '\n\n').trim();
 }
-async function buildExport({ label, notes, tasks, includeDone, includeQuick }) {
+async function buildExport({ label, notes, tasks, includeDone, includeQuick, boards = [] }) {
   const imgRecs = new Map((await DB.all('images')).map(i => [i.id, i]));
   const extOf = id => (imgRecs.get(id)?.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
   const ctx = { images: new Set(), depth: 0, ext: extOf };
@@ -1127,7 +1558,21 @@ async function buildExport({ label, notes, tasks, includeDone, includeQuick }) {
       L.push(`_${meta.join(' · ')}_`, '', htmlToMd(n.html, ctx) || '_(empty)_', '');
     }
   }
-  if (!t.length && !ns.length) L.push('_Nothing matched this selection._');
+  if (boards.length && window.GDDModel) {
+    L.push('## GDDs', '', '_Visual game design boards. Ids in backticks are board and item ids for the ForkPad connector (get_gdd, gdd_item)._', '');
+    for (const b of boards) {
+      const { md, images } = GDDModel.boardToMarkdown(b, {
+        imageRef: id => `images/${id}.${extOf(id)}`,
+        projectName: proj(b.projectId)?.name || null,
+        taskLookup: itemId => S.tasks.filter(x => x.gdd?.boardId === b.id && x.gdd.itemId === itemId),
+      });
+      images.filter(id => imgRecs.has(id)).forEach(id => ctx.images.add(id));
+      // nest the board's own headings under "## GDDs"
+      L.push(md.trim().replace(/^(#+) /gm, '##$1 '), '');
+      if (b.previewId && imgRecs.has(b.previewId)) { ctx.images.add(b.previewId); L.push(`Snapshot of the whole board: ![${b.title}](images/${b.previewId}.${extOf(b.previewId)})`, ''); }
+    }
+  }
+  if (!t.length && !ns.length && !boards.length) L.push('_Nothing matched this selection._');
   const imageFiles = [...ctx.images].filter(id => imgRecs.has(id)).map(id => ({ name: `images/${id}.${extOf(id)}`, id }));
   return { md: L.join('\n').replace(/\n{3,}/g, '\n\n') + '\n', imageFiles };
 }
@@ -1180,7 +1625,8 @@ const slug = s => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-
 
 /* scope: { label, notes, tasks, sections? (tags to choose from), projectId? } */
 function openExport(scope) {
-  const opts = { sel: new Set(scope.preselect || []), includeDone: false, includeQuick: true, includeTasks: true, includeNotes: true };
+  const opts = { sel: new Set(scope.preselect || []), includeDone: false, includeQuick: true, includeTasks: true, includeNotes: true, includeGdds: true };
+  const boards = scope.boards || [];
   const sections = scope.sections || [];
   modal(`<h2>${ic('spark', 'accent')} Export for Claude</h2>
     <p class="muted small">Builds a Markdown brief of <b>${esc(scope.label)}</b>. Copy it into any Claude chat or Claude Code session, or download a .zip that also includes the screenshots.</p>
@@ -1189,6 +1635,7 @@ function openExport(scope) {
     <div class="checks">
       ${scope.tasks.length ? '<label><input type="checkbox" id="exTasks" checked> Tasks</label><label><input type="checkbox" id="exDone"> Include finished tasks</label>' : ''}
       ${scope.notes.length ? '<label><input type="checkbox" id="exNotes" checked> Notes</label>' : ''}
+      ${boards.length ? `<label><input type="checkbox" id="exGdds" checked> GDD boards (${boards.length})</label>` : ''}
     </div>
     <div class="field"><span class="ex-stats" id="exStats"></span><textarea id="exPreview" class="preview" readonly rows="12"></textarea></div>
     <footer><span class="muted small" id="exImgs"></span><span class="spacer"></span>
@@ -1203,6 +1650,7 @@ function openExport(scope) {
         notes: opts.includeNotes ? scope.notes.filter(passes) : [],
         tasks: opts.includeTasks ? scope.tasks.filter(passes) : [],
         includeDone: opts.includeDone, includeQuick: opts.includeQuick,
+        boards: opts.includeGdds ? boards : [], // boards have no tags, so the section filter doesn't apply
       });
       result.label = label;
       $('#exPreview', m).value = result.md;
@@ -1220,6 +1668,7 @@ function openExport(scope) {
       opts.includeTasks = $('#exTasks', m)?.checked ?? false;
       opts.includeDone = $('#exDone', m)?.checked ?? false;
       opts.includeNotes = $('#exNotes', m)?.checked ?? false;
+      opts.includeGdds = $('#exGdds', m)?.checked ?? false;
       refresh();
     });
     $('#exCopy', m).onclick = async () => {
@@ -1236,7 +1685,8 @@ function openExport(scope) {
 }
 function exportProject(p) {
   const notes = S.notes.filter(n => n.projectId === p.id), tasks = S.tasks.filter(t => t.projectId === p.id);
-  openExport({ label: `Project: ${p.name}`, notes, tasks, sections: tagCounts(notes, tasks), preselect: pref.get('filter.' + p.id, []) });
+  const boards = S.boards.filter(b => b.projectId === p.id).sort((a, b) => a.created - b.created);
+  openExport({ label: `Project: ${p.name}`, notes, tasks, boards, sections: tagCounts(notes, tasks), preselect: pref.get('filter.' + p.id, []) });
 }
 
 /* ---------- backup ---------- */
@@ -1249,7 +1699,7 @@ async function openSettings() {
       : `<p class="muted">ForkPad keeps everything as plain files in <code>${esc(info?.dataDir || 'the data folder')}</code> on this computer. Nothing is uploaded anywhere. Claude Code sessions can read and update it through the ForkPad connector. Export a backup now and then.</p>`}
     <div class="stat-grid">
       <div><b>${S.notes.length}</b><span>notes &amp; thoughts</span></div><div><b>${S.tasks.length}</b><span>tasks</span></div>
-      <div><b>${S.projects.length}</b><span>projects</span></div><div><b>${info?.bytes != null ? fmtBytes(info.bytes) : '-'}</b><span>storage used</span></div>
+      <div><b>${S.projects.length}</b><span>projects${S.boards.length ? ` · ${S.boards.length} GDDs` : ''}</span></div><div><b>${info?.bytes != null ? fmtBytes(info.bytes) : '-'}</b><span>storage used</span></div>
     </div>
     <p class="small muted">Last backup: <b>${last ? rel(last) : 'never'}</b></p>
     <footer><button class="btn ghost" id="stImport">${ic('upload')}Import backup…</button><span class="spacer"></span>
@@ -1261,6 +1711,8 @@ async function openSettings() {
       <div><kbd>Ctrl</kbd>+click<span>Open a link inside a note</span></div>
       <div><kbd>#</kbd> <kbd>-</kbd> <kbd>1.</kbd> <kbd>[]</kbd> <kbd>&gt;</kbd> + space<span>Heading, bullets, numbers, checklist, quote</span></div>
       <div>Double-click image<span>View full size</span></div>
+      <div><kbd>V</kbd> <kbd>T</kbd> <kbd>N</kbd> <kbd>P</kbd> <kbd>A</kbd><span>GDD board: select, text, note, pen, arrow</span></div>
+      <div><kbd>?</kbd> on a GDD board<span>All board shortcuts</span></div>
     </div>`, (m, close) => {
     $('#stExport', m).onclick = async () => { await exportBackup(); close(); };
     $('#stImport', m).onclick = () => {
@@ -1273,7 +1725,7 @@ async function openSettings() {
 async function exportBackup() {
   flushSaves();
   const images = await Promise.all((await DB.all('images')).map(async i => ({ id: i.id, created: i.created, data: await blobToDataURL((await DB.get('images', i.id)).blob) })));
-  const data = { app: 'ForkPad', version: 1, exported: new Date().toISOString(), projects: S.projects, notes: S.notes, tasks: S.tasks, images };
+  const data = { app: 'ForkPad', version: 1, exported: new Date().toISOString(), projects: S.projects, notes: S.notes, tasks: S.tasks, boards: S.boards, images };
   download(new Blob([JSON.stringify(data)], { type: 'application/json' }), `forkpad-backup-${todayStr()}.json`);
   pref.set('lastBackup', Date.now());
   renderNav();
@@ -1285,16 +1737,19 @@ async function importBackup(file) {
   try { data = JSON.parse(await file.text()); } catch { toast("That file isn't a valid backup"); return; }
   if (data?.app !== 'ForkPad') { toast("That file isn't a ForkPad backup"); return; }
   const list = k => (Array.isArray(data[k]) ? data[k] : []).filter(x => x && typeof x.id === 'string');
-  const [projects, notes, tasks, images] = ['projects', 'notes', 'tasks', 'images'].map(list);
-  if (!await confirmDialog('Import this backup?', `Adds ${notes.length} notes, ${tasks.length} tasks and ${projects.length} projects. Items that already exist are replaced by the backup's version.`, 'Import', false)) return;
+  const [projects, notes, tasks, boards, images] = ['projects', 'notes', 'tasks', 'boards', 'images'].map(list);
+  if (!await confirmDialog('Import this backup?', `Adds ${notes.length} notes, ${tasks.length} tasks, ${projects.length} projects${boards.length ? ` and ${boards.length} GDD boards` : ''}. Items that already exist are replaced by the backup's version.`, 'Import', false)) return;
   notes.forEach(n => { n.html = sanitize(n.html || ''); n.tags ||= []; });
+  boards.forEach(b => GDDModel.migrate(b));
   await DB.putMany('projects', projects);
   await DB.putMany('notes', notes);
   await DB.putMany('tasks', tasks);
+  if (boards.length) await DB.putMany('boards', boards);
   for (const i of images) {
     if (!/^data:image\//.test(i.data)) continue;
     await DB.put('images', { id: i.id, blob: await (await fetch(i.data)).blob(), created: i.created || Date.now() });
   }
+  unmountGdd(); // the open board may have been replaced; render() mounts the imported one
   await loadAll();
   render();
   toast('Backup imported');
@@ -1350,6 +1805,9 @@ const actions = {
     render();
     if (t.status === 'done') toast('Task completed', 'Undo', () => { setStatus(t, was); DB.put('tasks', t); render(); });
   },
+  'new-gdd': el => newGddModal(el.dataset.project || (S.view.type === 'project' ? S.view.id : null)),
+  'gdd-edit': el => editGddModal(boardById(el.dataset.id)),
+  'gdd-del': el => deleteBoard(boardById(el.dataset.id)),
   'clear-done': async () => {
     const p = proj(S.view.id);
     const done = S.tasks.filter(t => t.projectId === p.id && t.status === 'done');
@@ -1363,7 +1821,8 @@ const actions = {
 function bindGlobal() {
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-nav],[data-act],[data-note],[data-task]');
-    if (!el || el.closest('.modal')) return;
+    // the GDD editor owns every click inside it (its own data-* attributes must not trigger app actions)
+    if (!el || el.closest('.modal') || el.closest('.gdd-host')) return;
     if (el.dataset.nav) go({ type: el.dataset.nav, id: el.dataset.id });
     else if (el.dataset.act) actions[el.dataset.act]?.(el, e);
     else if (el.dataset.note) selectNote(el.dataset.note);
@@ -1411,7 +1870,8 @@ function bindGlobal() {
 /* ---------- live sync ---------- */
 // Claude (through the ForkPad connector) edits the same data folder. Its changes are merged
 // in place, so open editors keep their objects, and re-rendering waits while the user is busy.
-const busy = () => $('#modalRoot').children.length > 0 || !!$('.dragging') ||
+const gddBusy = () => { try { return !!gddMount?.ctl?.isBusy?.(); } catch { return false; } };
+const busy = () => $('#modalRoot').children.length > 0 || !!$('.dragging') || gddBusy() ||
   !!document.activeElement?.matches?.('input, textarea, select, [contenteditable="true"]');
 function mergeInto(list, fresh, keep) {
   const byId = new Map(list.map(x => [x.id, x]));
@@ -1426,8 +1886,9 @@ function mergeInto(list, fresh, keep) {
   return out;
 }
 async function syncFromDisk() {
-  const [projects, notes, tasks] = await Promise.all(['projects', 'notes', 'tasks'].map(s => DB.all(s)));
+  const [projects, notes, tasks, boards] = await Promise.all([...['projects', 'notes', 'tasks'].map(s => DB.all(s)), DB.all('boards').catch(() => null)]);
   if (!projects || !notes || !tasks) return;
+  if (Array.isArray(boards)) syncBoards(boards.map(b => GDDModel.migrate(b)));
   const open = noteById(S.noteId);
   const editing = open && (pending.has(open.id) || !!document.activeElement?.closest?.('.editor'));
   const freshOpen = open && notes.find(n => n.id === open.id);
@@ -1437,6 +1898,7 @@ async function syncFromDisk() {
   S.tasks = mergeInto(S.tasks, tasks);
   S.notes.forEach(n => { n.tags ||= []; });
   S.tasks.forEach(t => { t.tags ||= []; });
+  refreshGdd(); // task chips and the project select on an open board
   if (editing && openChanged) toast('This note was also changed outside ForkPad', 'Load their version', () => { Object.assign(open, freshOpen); pending.delete(open.id); mountEditor(); renderList(); });
   if (busy()) { renderNav(); renderList(); S.stale = true; } else { S.stale = false; render(); }
 }
@@ -1448,13 +1910,16 @@ function watchDisk() {
     if (!downShown) toast("Lost touch with the ForkPad helper. Changes may not save: close and reopen ForkPad.");
     downShown = true;
   });
-  setInterval(() => { if (S.stale && !busy()) { S.stale = false; render(); } }, 1500);
+  setInterval(() => { retryGddReload(); if (S.stale && !busy()) { S.stale = false; render(); } }, 1500);
   window.addEventListener('focus', () => { if (!DB.local) queueSync(); });
 }
 
 /* ---------- boot ---------- */
 async function loadAll() {
-  [S.projects, S.notes, S.tasks] = await Promise.all(['projects', 'notes', 'tasks'].map(s => DB.all(s)));
+  let boards;
+  [S.projects, S.notes, S.tasks, boards] = await Promise.all([...['projects', 'notes', 'tasks'].map(s => DB.all(s)), DB.all('boards').catch(() => null)]);
+  S.boardsOk = Array.isArray(boards);
+  S.boards = (boards || []).map(b => GDDModel.migrate(b));
   S.projects.sort((a, b) => a.created - b.created);
   S.notes.forEach(n => { n.tags ||= []; });
   S.tasks.forEach(t => { t.tags ||= []; });
@@ -1504,6 +1969,7 @@ async function boot() {
   document.execCommand('defaultParagraphSeparator', false, 'p');
   S.view = pref.get('view', { type: 'home' });
   if ((S.view.type === 'project' && !proj(S.view.id)) || S.view.type === 'search') S.view = { type: 'home' };
+  if (S.view.type === 'gdd' && !boardById(S.view.id)) S.view = { type: 'gdds' };
   bindGlobal();
   render();
   gcImages();

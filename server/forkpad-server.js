@@ -11,7 +11,8 @@ const store = require('./store');
 const PORT = Number(process.env.FORKPAD_PORT) || 47821;
 const IDLE_MS = Number(process.env.FORKPAD_IDLE_MS) || 60e3;
 const ORIGINS = [`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`];
-const STATIC = { '/': 'index.html', '/index.html': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/db.js': 'db.js', '/forkpad.ico': 'forkpad.ico' };
+const STATIC = { '/': 'index.html', '/index.html': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/db.js': 'db.js', '/forkpad.ico': 'forkpad.ico',
+  '/gdd-model.js': 'gdd-model.js', '/gdd-render.js': 'gdd-render.js', '/gdd.js': 'gdd.js', '/gdd.css': 'gdd.css' };
 const MIME = { html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', ico: 'image/x-icon' };
 const LOG = path.join(__dirname, 'forkpad-server.log');
 
@@ -27,6 +28,9 @@ let lastActive = Date.now();
 // Hash of the last bytes this server wrote per file, so its own writes aren't echoed back.
 const ownWrites = new Map();
 const own = (file, data) => ownWrites.set(path.resolve(file), store.hash(data));
+// Deletes are marked too: a board snapshot replaces its old preview image every save,
+// and echoing that DELETE would make the app refetch every store each time.
+const ownDelete = file => { if (file && fs.existsSync(file)) ownWrites.set(path.resolve(file), 'deleted'); };
 
 function broadcast(msg) {
   const line = `data: ${JSON.stringify(msg)}\n\n`;
@@ -35,7 +39,7 @@ function broadcast(msg) {
 const pendingEvents = new Map();
 function onFsEvent(rel) {
   if (!rel || rel.endsWith('.tmp')) return;
-  const m = /^(projects|notes|tasks|images)[\\/]([A-Za-z0-9_-]+)\.[a-z]+$/.exec(rel);
+  const m = /^(projects|notes|tasks|boards|images)[\\/]([A-Za-z0-9_-]+)\.[a-z]+$/.exec(rel);
   if (!m) return;
   const key = m[1] + '/' + m[2];
   clearTimeout(pendingEvents.get(key));
@@ -46,6 +50,7 @@ function onFsEvent(rel) {
     try { data = fs.readFileSync(file); } catch { /* deleted */ }
     const h = data && store.hash(data);
     if (h && ownWrites.get(file) === h) return;
+    if (!data && ownWrites.get(file) === 'deleted') return void ownWrites.delete(file);
     ownWrites.delete(file);
     broadcast({ store: m[1], id: m[2], deleted: !data });
   }, 120));
@@ -125,7 +130,7 @@ async function handle(req, res) {
       own(file, buf);
       return send(res, 200, { ok: true });
     }
-    if (req.method === 'DELETE') { store.delImage(id); return send(res, 200, { ok: true }); }
+    if (req.method === 'DELETE') { ownDelete(store.imageFile(id)?.file); store.delImage(id); return send(res, 200, { ok: true }); }
     return send(res, 405, { error: 'method' });
   }
 
@@ -151,7 +156,7 @@ async function handle(req, res) {
     own(path.join(store.DATA, what, id + '.json'), store.put(what, obj));
     return send(res, 200, { ok: true });
   }
-  if (req.method === 'DELETE') { store.del(what, id); return send(res, 200, { ok: true }); }
+  if (req.method === 'DELETE') { ownDelete(path.join(store.DATA, what, id + '.json')); store.del(what, id); return send(res, 200, { ok: true }); }
   send(res, 405, { error: 'method' });
 }
 

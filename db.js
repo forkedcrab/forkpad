@@ -2,14 +2,15 @@
    and keeps everything as plain files in the data folder, where the Claude connector can
    read them too. Opened straight from file:// (the old way) it falls back to the browser's
    IndexedDB, which is where data lived before the move. Same DB.* interface either way.
-   Image records: { id, created, type, blob }; DB.all('images') leaves blob out. */
+   Image records: { id, created, type, blob }; DB.all('images') leaves blob out.
+   GDD boards live in their own 'boards' store (added in IndexedDB version 2). */
 const DB = location.protocol === 'file:' ? (() => {
-  const STORES = ['projects', 'notes', 'tasks', 'images'];
+  const STORES = ['projects', 'notes', 'tasks', 'images', 'boards'];
   let db;
 
   function open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('forkpad', 1);
+      const req = indexedDB.open('forkpad', 2); // 2: adds the 'boards' store
       req.onupgradeneeded = () => {
         for (const s of STORES) {
           if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s, { keyPath: 'id' });

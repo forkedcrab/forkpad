@@ -15,11 +15,12 @@ Write down bugs, ideas and tasks while you work (paste screenshots too), then te
 - **Projects** with a Kanban board (To do / In progress / Done) and project notes
 - **Notes**: rich text, checklists, code blocks, links, pasted or dropped screenshots, tags, pinning
 - **Sections**: tag notes and tasks (`#bugs`, `#ideas`, ...) and filter a project by them
+- **GDD boards**: a visual Game Design Document for each game idea. An open canvas with sections, sticky notes and text bubbles, images with borders (set a default border once and new images follow it), simple shapes, arrows and lines between anything, and a pen to doodle over it all. Start from a GDD template or a blank board, and link it to a project
 - **Quick thoughts**: `Alt+Q`, type, Enter. Turn them into notes or tasks later
 - **Upcoming**: everything with a due date, across all projects
 - **Search**: `Ctrl+K` matches text, projects and `#tags`
 - **Export for Claude**: copy a Markdown brief of a project, a section or a note, or download it as a `.zip` with the screenshots
-- **Claude Code connector** (MCP) with 22 tools: list, read, add, edit, move, complete and delete projects, tasks, notes and quick thoughts, and view screenshots
+- **Claude Code connector** (MCP) with 30 tools: list, read, add, edit, move, complete and delete projects, tasks, notes and quick thoughts, view screenshots, and read, fill in and plan from GDD boards
 - **Live sync**: changes Claude makes show up in an open ForkPad window within about a second
 
 ## Requirements
@@ -107,8 +108,13 @@ In ForkPad, edit a project (pencil next to its name) and set **Code folder** to 
 - "Add a ForkPad task: enemy AI too aggressive, tag it bugs"
 - "Write a ForkPad note summarising what we changed today"
 - "Make a ForkPad project called Demo, blue, linked to this folder"
+- "Read my GDD Space Snail and make a project with tasks"
+- "Add a Bosses section to the Space Snail GDD with a note for each boss"
+- "Which tasks from the Space Snail GDD are still open?"
 
-Claude only deletes projects, tasks or notes when you ask it to. Deleting a project also deletes its tasks and notes.
+Claude reads a GDD board as structured text (sections, notes, connections, linked tasks) plus a snapshot image of the whole board, so it sees your images and doodles too. Tasks it makes from a board stay linked to the board item they implement, and the board shows them.
+
+Claude only deletes projects, tasks, notes or GDD boards when you ask it to. Deleting a project also deletes its tasks and notes, but keeps its GDD boards (they just lose the project link).
 
 ## Use it with other AI tools
 
@@ -152,8 +158,8 @@ Only Claude Code has been tested so far. Reports from other apps are welcome.
 
 Everything lives in the `data` folder inside ForkPad:
 
-- `projects/`, `notes/`, `tasks/`: one `.json` file per item
-- `images/`: pasted screenshots
+- `projects/`, `notes/`, `tasks/`, `boards/` (GDD boards): one `.json` file per item
+- `images/`: pasted screenshots, images on GDD boards and board snapshots
 - `meta/`: preferences
 
 Back up the `data` folder now and then, or use **Backup & data** (bottom left) > **Export backup**. To keep your data somewhere else, set the `FORKPAD_DATA` environment variable to a folder path before starting ForkPad, and pass the same folder to the connector: `claude mcp add --scope user -e FORKPAD_DATA=/path/to/folder forkpad -- node ...`.
@@ -161,6 +167,7 @@ Back up the `data` folder now and then, or use **Backup & data** (bottom left) >
 ## Files
 
 - `index.html`, `style.css`, `app.js`: the app
+- `gdd.js`, `gdd.css`: the GDD board editor; `gdd-render.js`: board snapshots and PNG export; `gdd-model.js`: the board data model, shared with the connector
 - `db.js`: storage in the app (talks to the helper)
 - `server/forkpad-server.js`: the local helper; `server/store.js`: file storage shared with the connector; `server/start.js`: cross-platform launcher
 - `mcp/forkpad-mcp.js`, `mcp/md.js`: the Claude Code connector (MCP over stdio, no dependencies)
